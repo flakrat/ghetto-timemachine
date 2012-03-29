@@ -1,7 +1,7 @@
 #!/usr/bin/ruby -w
 #-----------------------------------------------------------------------------
 # Name        :  ghetto-timemachine.rb
-# Author      :  Mike Hanby <mhanby@uab.edu>
+# Author      :  Mike Hanby < mhanby at uab.edu >
 # Organization:  University of Alabama at Birmingham
 # Description :  This script is used for backing up a *NIX workstation using the
 #     classic Rsync using Hardlinks rotation technique described at this URL:
@@ -13,6 +13,9 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120329 - mhanby - fixed small bug where script wasn't able to create net/ssh object
+#   if user didn't specify a remote user in the destination (user@srv:/path)
+#   The script will now use the current shell account if it's not specified in the dest
 # 20120328 - mhanby - I've moved much of the file and directory operations into
 #   methods so that the method handles all of the local / remote file system
 #   specific code
@@ -176,7 +179,11 @@ if dest =~ /:/
   #require 'net/sftp'
   rem_srv = dest.match(/^(.*):.*$/)[1]
   rem_srv.sub!(/^.*@/, '')
-  rem_user = dest.match(/(^.*)@(.*):.*$/)[1] if dest =~ /@/
+  if dest =~ /@/
+    rem_user = dest.match(/(^.*)@(.*):.*$/)[1]
+  else
+    rem_user = ENV['USER'] 
+  end
   dest = dest.match(/^.*:(.*)$/)[1]
   ssh = Net::SSH.start(rem_srv, rem_user)
   #sftp = Net::SFTP.start(rem_srv, rem_user)
