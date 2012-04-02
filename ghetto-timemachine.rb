@@ -13,6 +13,12 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120402 - mhanby - Created new method, chkdir(dir, ssh), used throughout the code
+#   to check if dir exists. chkdir works for both local and remote.
+#   This consolidates all directory checking code into single method and attempts
+#   to solve an issue the script was having with previous remote dir checks, where
+#   the results relied on stderr to indicate the absence of the dir. This wasn't
+#   100% predictable and led to unpredictable results.
 # 20120330 - mhanby - some minor fixes
 #   1. script would error if optional --excludes was not provide
 #   2. runnign script via cron, the HOSTNAME env variable is not set in the limited
@@ -31,7 +37,7 @@
 #    * hard_link(src, dest, ssh)
 #    * disk_free(path, ssh)
 #    * run_rsync(opts, src, dest, ssh)
-#    * update_mtime(dest, ssh)
+#    * update_mtime(dir, ssh)
 #
 # 20120327 - mhanby - I originally intended to use net-ssh for remote commands
 #   and net-sftp for directory operations (create, delete, rename) thinking sftp
@@ -62,7 +68,11 @@
 #
 #-----------------------------------------------------------------------------
 # Todo / Things that don't work
-# FIXED - 1.  Source and Dest with spaces in the path don't currently work.
+# 4. Add a lock file to prevent the script from running multiple times for the
+#   same backup job
+#   May add a #{jobname} variable to the job to allow for multiple unrelated backups
+#   to run at same time
+# FIXED - 3.  Source and Dest with spaces in the path don't currently work.
 #     This is tricky because some commands expect spaces to be escaped (system
 #     commands), where as Ruby FileUtils expect non escaped
 # WONTFIX - 2.  SAMBA / CIFS
@@ -83,7 +93,7 @@
 #       -r, --recursive             recurse into directories
 #       Possibly use "rsync -a --no-p --no-t"
 #   c.  Current testing unable to copy .files to the SMB mount (i.e. .bashrc)
-# FIXED - 4.  Figure out a way to allow this script to write to a remote --dest that is
+# FIXED - 1.  Figure out a way to allow this script to write to a remote --dest that is
 #     accessible via ssh (sftp, rsync -e ssh, etc...)
 #-----------------------------------------------------------------------------
 require 'optparse' # CLI Option Parser
@@ -195,23 +205,30 @@ if dest =~ /:/
   #sftp = Net::SFTP.start(rem_srv, rem_user)
 end
 
+# Check whether or not a directory exists, whether local or remote
+def chkdir(dir, ssh)
+  result = nil
+  if ssh
+    # BASH test for directory
+    result = ssh.exec!("[ -d \"#{dir.gsub(/\s+/, '\ ')}\" ] && echo exists")
+  else
+    result = 'exists' if File.directory?(dir)
+  end
+  return result
+end
+
 # create directory method, supports local and remote
 def mkdir(dir, ssh)
-  if ssh
-    # the stat command will result in stderr stream if file doesn't exist
-    ssh.exec!("stat #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-      if stream == :stderr # Directory doesn't exist, create it
-        puts "\tCreating remote #{dir}"
-        ssh.exec!("mkdir #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-          if stream == :stderr
-            raise "Failed to create #{dir}:\n   #{data}"
-          end
+  unless chkdir(dir, ssh)
+    if ssh
+      puts "\tCreating remote #{dir}"
+      ssh.exec!("mkdir #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+        if stream == :stderr
+          raise "Failed to create #{dir}:\n   #{data}"
         end
       end
-    end
-  else
-    unless File.directory?(dir)
-      puts "\tCreating local #{dir}"  
+    else
+      puts "\tCreating local #{dir}"
       Dir.mkdir(dir)
     end
   end
@@ -219,20 +236,16 @@ end
 
 # remove directory, supports local and remote
 def rmdir(dir, ssh)
-  if ssh
-    ssh.exec!("stat #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-      unless stream == :stderr # Directory exist, delete it
-        puts "\tDeleting remote #{dir}"
-        ssh.exec!("rm -rf #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-          if stream == :stderr
-            raise "Failed to delete #{dir}:\n   #{data}"
-          end
+  if chkdir(dir, ssh) # dir exists, delete it
+    if ssh
+      puts "\tDeleting remote #{dir}"
+      ssh.exec!("rm -rf #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+        if stream == :stderr
+          raise "Failed to delete #{dir}:\n   #{data}"
         end
       end
-    end
-  else
-    if File.directory?(dir)
-      puts "\tDeleting local #{dir}"  
+    else
+      puts "\tDeleting local #{dir}"
       FileUtils.rm_rf(dir)
     end
   end
@@ -240,22 +253,18 @@ end
 
 # move directory, supports local and remote
 def mvdir(src, dest, ssh)
-  if ssh
-    ssh.exec!("stat #{src.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-      unless stream == :stderr # Directory exist, move it
-        puts "\t#{src} => #{dest}"
-        ssh.exec!("mv #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}") do |ch, stream, data|
-          if stream == :stderr
-            raise "Failed to move #{src}:\n   #{data}"
-          end
+  if chkdir(src, ssh) # source dir exists, move it
+    if ssh
+      puts "\t#{src} => #{dest}"
+      ssh.exec!("mv #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+        if stream == :stderr
+          raise "Failed to move #{src}:\n   #{data}"
         end
       end
     end
   else
-    if File.directory?(src)
-      puts "\t#{src} => #{dest}"  
-      FileUtils.mv(src, dest)
-    end
+    puts "\t#{src} => #{dest}"
+    FileUtils.mv(src, dest)
   end
 end
 
@@ -307,11 +316,11 @@ def run_rsync(opts, src, dest, ssh)
 end
 
 # updates the mtime of dest to current time
-def update_mtime(dest, ssh)
+def update_mtime(dir, ssh)
   if ssh
-    ssh.exec!("/bin/touch #{dest.gsub(/\s+/, '\ ')}")
+    ssh.exec!("/bin/touch #{dir.gsub(/\s+/, '\ ')}")
   else
-    system("/bin/touch #{dest.gsub(/\s+/, '\ ')}")
+    system("/bin/touch #{dir.gsub(/\s+/, '\ ')}")
   end
 end
 
@@ -333,6 +342,12 @@ print <<EOF
 |  Disk Usage Before Backup: #{du_pre}
 =====================================================================
 EOF
+
+# Check if the base destination directory exists
+puts "#{step += 1}. Checking for base destination directory"
+unless chkdir(dest, ssh)
+  raise "Destination dir does not exist: #{dest}"
+end
 
 # Create the base level directory tree
 puts "#{step += 1}. Checking for missing base level directories"
@@ -373,7 +388,7 @@ puts "#{step += 1}. Creating symbolic link pointing 'latest' to '#{dailydirs[tim
 soft_link("#{dailydirs[time.wday]}", "#{dest}/latest", ssh)
 
 # If it's Sunday, create a snapshot into weekly/weekly1
-if time.wday == 0
+if time.wday == 0 # first day of week, zero based
   substep = 0
   puts "#{step += 1}. Creating weekly snapshot"
   puts "  #{step}.#{substep += 1}. Checking for missing weekly directories"
@@ -397,7 +412,7 @@ else
 end
 
 # If it's the first day of the month, create the monthly/<month name> snapshot
-if time.day == 1
+if time.day == 1 # first day of month
   substep = 0
   # subtract 2 from time.month since monthdirs is 0 based and we want last month, not current
   puts "#{step += 1}. Creating monthly snapshot for #{months[time.month - 2]}"
