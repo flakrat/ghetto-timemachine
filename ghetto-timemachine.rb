@@ -13,6 +13,11 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120330 - mhanby - some minor fixes
+#   1. script would error if optional --excludes was not provide
+#   2. runnign script via cron, the HOSTNAME env variable is not set in the limited
+#     cron env, thus #{ENV['HOSTNAME']} returned nothing
+#     Now using Socket.gethostname
 # 20120329 - mhanby - fixed small bug where script wasn't able to create net/ssh object
 #   if user didn't specify a remote user in the destination (user@srv:/path)
 #   The script will now use the current shell account if it's not specified in the dest
@@ -83,6 +88,7 @@
 #-----------------------------------------------------------------------------
 require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
+require 'socket' # For Socket.gethostname
 
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
@@ -154,7 +160,7 @@ backup_name = "#{source} Daily Backup"
 step = 0 # counter used when printing steps
 rsync_opts = '-a --one-file-system --delete --delete-excluded' # default rsync options
 #rsync_opts += ' -v' if options[:verbose]
-options[:excludes].each { |exc| rsync_opts += " --exclude='#{exc}'" }
+options[:excludes].each { |exc| rsync_opts += " --exclude='#{exc}'" } if options[:excludes]
 
 # Time and Day related variables
 time = Time.new
@@ -316,7 +322,7 @@ print <<EOF
 ======================== BACKUP REPORT ==============================
 |  Date          -  #{starttime}
 |  Run by        -  #{ENV['USER']}
-|  Host          -  #{ENV['HOSTNAME']}
+|  Host          -  #{Socket.gethostname}
 |  Source        -  #{source}
 |  Destination   -  #{dest}
 EOF
