@@ -67,6 +67,15 @@ The two directories are now identical, all files inodes are the same, so disk us
   12 months
 11. Print a nice summary
 
+Sample Cron Job: The following is an example cron job to run the script at 1:10 AM, including PATHs to
+user supplied Ruby libraries (line breaks added for readability)
+
+10 1 * * * export GEM_HOME=$HOME/.ruby/lib/ruby/gems/1.8 ; \
+export RUBYLIB=$HOME/.ruby/lib:$HOME/.ruby/lib/site_ruby/1.8:$RUBYLIB ; \
+$HOME/bin/ghetto-timemachine.rb --src $HOME --dest nas-srv:/backups/workstation \
+--exclude=tmp/\*,Downloads/\*,archive/\*,VMs/lost+found \
+ | mail -s "SNAPSHOT - Home Directory on $(hostname -s)" flakrat
+
 Enjoy,
 
 Mike
