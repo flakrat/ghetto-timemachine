@@ -13,6 +13,7 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120403 - mhanby - Fixed logic bug in code that checks if user is root
 # 20120403 - mhanby - Added new features
 #   1. --precmds  - A comma separated list of commands to run prior to the backup
 #   2. --postcmds - A comma separated list of commands to run after the backup
@@ -21,8 +22,8 @@
 #   Example, stopping VirtualBox VMs prior to backup, then resume them:
 #  $ ./ghetto-timemachine.rb --src ~ \
 #    --dest user1@srv01:/backups/user1 \
-#    --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" pause\") }' /var/tmp/runningvms.log" \
-#    --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" resume\") }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log"
+#    --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" savestate\") }' /var/tmp/runningvms.log" \
+#    --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage startvm \" \$1) }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log"
 #
 #   The script will error if either of these args are used and the executing user is ROOT
 # 20120402 - mhanby - Created new method, chkdir(dir, ssh), used throughout the code
@@ -199,7 +200,11 @@ precmds = nil
 precmds = options[:precmds] if options[:precmds] 
 postcmds = nil
 postcmds = options[:postcmds] if options[:postcmds]
-raise "For protection, the script doesn't allow use of --precmds or --postcmds if run as user ROOT" if precmds || postcmds && Process.euid == 0
+
+if ( precmds || postcmds ) && Process.uid == 0
+#  puts "root user: euid: #{Process.euid} uid: #{Process.uid}"
+  raise "For protection, the script doesn't allow use of --precmds or --postcmds if run as user ROOT"
+end
 
 # Time and Day related variables
 time = Time.new

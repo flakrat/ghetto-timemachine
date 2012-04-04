@@ -79,14 +79,14 @@ $HOME/bin/ghetto-timemachine.rb --src $HOME \
   --exclude=tmp/\*,Downloads/\*,archive/\*,lost+found \
   | mail -s "SNAPSHOT - Home Directory on $(hostname -s)" flakrat
 
-Another example providing pre and post commands to pause and resume virtual machines:
+Another example providing pre and post commands to savestate and resume virtual machines:
 10 1 * * * export GEM_HOME=$HOME/.ruby/lib/ruby/gems/1.8 ; \
 export RUBYLIB=$HOME/.ruby/lib:$HOME/.ruby/lib/site_ruby/1.8:$RUBYLIB ; \
 $HOME/bin/ghetto-timemachine.rb --src $HOME \
   --dest user1@nas-srv:/backups/user1/workstation \
   --exclude=tmp/\*,Downloads/\*,archive/\*,lost+found \
-  --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" pause\") }' /var/tmp/runningvms.log" \
-  --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" resume\") }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log"
+  --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" savestate\") }' /var/tmp/runningvms.log" \
+  --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage startvm \" \$1) }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log"
 
    The script will error if either of these args are used and the executing user is ROOT
 
