@@ -13,6 +13,18 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120403 - mhanby - Added new features
+#   1. --precmds  - A comma separated list of commands to run prior to the backup
+#   2. --postcmds - A comma separated list of commands to run after the backup
+#   Surround each commands in quotes that contain spaces
+#   Commands must be escaped where neccessary 
+#   Example, stopping VirtualBox VMs prior to backup, then resume them:
+#  $ ./ghetto-timemachine.rb --src ~ \
+#    --dest user1@srv01:/backups/user1 \
+#    --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" pause\") }' /var/tmp/runningvms.log" \
+#    --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" resume\") }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log"
+#
+#   The script will error if either of these args are used and the executing user is ROOT
 # 20120402 - mhanby - Created new method, chkdir(dir, ssh), used throughout the code
 #   to check if dir exists. chkdir works for both local and remote.
 #   This consolidates all directory checking code into single method and attempts
@@ -139,6 +151,18 @@ optparse = OptionParser.new()  do |opts|
     options[:excludes] = exc
   end
   
+  # Commands to run prior to backup
+  options[:precmds] = nil
+  opts.on('--precmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally prior to the backup\n\tNOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate\n\tWARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |pre|
+    options[:precmds] = pre
+  end
+
+  # Commands to run after the backup
+  options[:postcmds] = nil
+  opts.on('--postcmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally after the backup\n\tNOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate\n\tWARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |post|
+    options[:postcmds] = post
+  end
+    
   # help
   options[:help] = false
   opts.on('-?', '-h', '--help', 'Display this help screen') do
@@ -171,6 +195,11 @@ step = 0 # counter used when printing steps
 rsync_opts = '-a --one-file-system --delete --delete-excluded' # default rsync options
 #rsync_opts += ' -v' if options[:verbose]
 options[:excludes].each { |exc| rsync_opts += " --exclude='#{exc}'" } if options[:excludes]
+precmds = nil
+precmds = options[:precmds] if options[:precmds] 
+postcmds = nil
+postcmds = options[:postcmds] if options[:postcmds]
+raise "For protection, the script doesn't allow use of --precmds or --postcmds if run as user ROOT" if precmds || postcmds && Process.euid == 0
 
 # Time and Day related variables
 time = Time.new
@@ -296,6 +325,7 @@ def disk_free(path, ssh)
   end
 end
 
+# Create hardlink copy of src to dest
 def hard_link(src, dest, ssh)
   if ssh
     #result = ssh.exec!("cp -al #{src} #{dest}")
@@ -324,6 +354,31 @@ def update_mtime(dir, ssh)
   end
 end
 
+# Execut pre backup commands
+def exec_cmds(cmds)
+  # Is it safe to allow the user to pass commands into the script and
+  # run them via system without using parameters?
+  cmds.each do |cmd|
+    puts "\tExecuting:\n\t  #{cmd}"
+    system(cmd)
+    raise "System command failed: #{$?}" if $? != 0
+  end  
+end
+
+# Exit the script after fatal error
+# Not implemented yet, still have some work to do
+def exit_fatal(msg, postcmds)
+  # Exit the script, but first run post commands
+  puts "Fatal Error Reported, beginning exit procedure"
+  if postcmds
+    puts "  Running Post system commands prior to exitting:"
+    exec_cmds(postcmds)
+  else
+    puts "  No Post backup system commands specified, continuing exitting after fatal error"
+  end
+  raise "#{msg}"
+end
+
 # escape any spaces in the path before sending it to the df system command
 du_pre = disk_free(dest.gsub(/\s+/, '\ '), ssh) # Store disk usage prior to running backup
 
@@ -347,6 +402,14 @@ EOF
 puts "#{step += 1}. Checking for base destination directory"
 unless chkdir(dest, ssh)
   raise "Destination dir does not exist: #{dest}"
+end
+
+# Run the pre backup system command
+if precmds
+  puts "#{step += 1}. Executing Pre backup system commands on the local host"
+  exec_cmds(precmds)
+else
+  puts "#{step += 1}. No Pre backup system commands specified, skipping"
 end
 
 # Create the base level directory tree
@@ -430,6 +493,14 @@ if time.day == 1 # first day of month
   hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{monthlydirs[time.month - 2]}", ssh)
 else
   puts "#{step += 1}. Monthly snapshot is only created on the first day of the month, skipping"
+end
+
+# Run the post backup system command
+if postcmds
+  puts "#{step += 1}. Executing Post backup system commands on the local host"
+  exec_cmds(postcmds)
+else
+  puts "#{step += 1}. No Pre backup system commands specified, skipping"
 end
 
 du_post = disk_free(dest.gsub(/\s+/, '\ '), ssh) # du post running the backup
