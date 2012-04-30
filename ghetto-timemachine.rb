@@ -2,7 +2,7 @@
 #-----------------------------------------------------------------------------
 # Name        :  ghetto-timemachine.rb
 # Author      :  Mike Hanby < mhanby at uab.edu >
-# Organization:  University of Alabama at Birmingham
+# Organization:  University of Alabama at Birmingham IT Research Computing
 # Description :  This script is used for backing up a *NIX workstation using the
 #     classic Rsync using Hardlinks rotation technique described at this URL:
 #     http://www.mikerubel.org/computers/rsync_snapshots/ 
@@ -13,6 +13,10 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120430 - mhanby - Fixed a major bug in mvdir() method where local dir moves
+#   would not execute if the src dir existed. Remote execution (ssh) worked properly
+# 20120409 - mhanby - Fixed reporting string for post command exectution, was reporting
+#   "pre" not "post"
 # 20120403 - mhanby - Fixed logic bug in code that checks if user is root
 # 20120403 - mhanby - Added new features
 #   1. --precmds  - A comma separated list of commands to run prior to the backup
@@ -148,19 +152,24 @@ optparse = OptionParser.new()  do |opts|
   
   # Files or directories to exclude
   options[:excludes] = nil
-  opts.on('-e', '--excludes Pattern1,Pattern2,PatternN', Array, 'Can specify multiple patterns to exclude separated by commas. See man rsync for PATTERN details') do |exc|
+  opts.on('-e', '--excludes Patrn1,Patrn2,PatrnN', Array, 'Can specify multiple patterns to exclude separated by commas.
+            See man rsync for PATTERN details') do |exc|
     options[:excludes] = exc
   end
   
   # Commands to run prior to backup
   options[:precmds] = nil
-  opts.on('--precmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally prior to the backup\n\tNOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate\n\tWARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |pre|
+  opts.on('--precmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally prior to the backup
+             NOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate
+             WARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |pre|
     options[:precmds] = pre
   end
 
   # Commands to run after the backup
   options[:postcmds] = nil
-  opts.on('--postcmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally after the backup\n\tNOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate\n\tWARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |post|
+  opts.on('--postcmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally after the backup
+             NOTE: make sure to wrap cmdN in quotes if it has spaces, and escape where appropriate
+             WARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |post|
     options[:postcmds] = post
   end
     
@@ -191,6 +200,7 @@ ssh = nil # if dest is remote, this will be the Net:SSH.start object
 dailydir = 'daily'
 weeklydir = 'weekly'
 monthlydir = 'monthly'
+basedirs = [dailydir, weeklydir, monthlydir]
 backup_name = "#{source} Daily Backup"
 step = 0 # counter used when printing steps
 rsync_opts = '-a --one-file-system --delete --delete-excluded' # default rsync options
@@ -255,14 +265,14 @@ end
 def mkdir(dir, ssh)
   unless chkdir(dir, ssh)
     if ssh
-      puts "\tCreating remote #{dir}"
+      puts "\tCreating remote dir #{dir}"
       ssh.exec!("mkdir #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
         if stream == :stderr
           raise "Failed to create #{dir}:\n   #{data}"
         end
       end
     else
-      puts "\tCreating local #{dir}"
+      puts "\tCreating local dir #{dir}"
       Dir.mkdir(dir)
     end
   end
@@ -272,14 +282,14 @@ end
 def rmdir(dir, ssh)
   if chkdir(dir, ssh) # dir exists, delete it
     if ssh
-      puts "\tDeleting remote #{dir}"
+      puts "\tDeleting remote dir #{dir}"
       ssh.exec!("rm -rf #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
         if stream == :stderr
           raise "Failed to delete #{dir}:\n   #{data}"
         end
       end
     else
-      puts "\tDeleting local #{dir}"
+      puts "\tDeleting local dir #{dir}"
       FileUtils.rm_rf(dir)
     end
   end
@@ -295,10 +305,10 @@ def mvdir(src, dest, ssh)
           raise "Failed to move #{src}:\n   #{data}"
         end
       end
+    else
+      puts "\t#{src} => #{dest}"
+      FileUtils.mv(src, dest)
     end
-  else
-    puts "\t#{src} => #{dest}"
-    FileUtils.mv(src, dest)
   end
 end
 
@@ -419,7 +429,7 @@ end
 
 # Create the base level directory tree
 puts "#{step += 1}. Checking for missing base level directories"
-for dir in %w(daily weekly monthly)
+basedirs.each do |dir|
   mkdir("#{dest}/#{dir}", ssh)
 end
 
@@ -466,7 +476,7 @@ if time.wday == 0 # first day of week, zero based
   puts "  #{step}.#{substep += 1}. Removing oldest weekly snapshot"
   rmdir("#{dest}/#{weeklydirs[-1]}", ssh)
   puts "  #{step}.#{substep += 1}. Rotating weekly snapshot directories"
-  i = weeklydirs.size - 2 # minus 1 is index of last element, we want 2nd to last
+  i = weeklydirs.size - 2 # Store index of 2nd to last element in weeklydirs
   while i >= 0
     # i.e. say weekly4 is last (deleted in prev step), move weekly3 => weekly4
     # weekly2 => weekly3, weekly1 => weekly2
@@ -505,7 +515,7 @@ if postcmds
   puts "#{step += 1}. Executing Post backup system commands on the local host"
   exec_cmds(postcmds)
 else
-  puts "#{step += 1}. No Pre backup system commands specified, skipping"
+  puts "#{step += 1}. No Post backup system commands specified, skipping"
 end
 
 du_post = disk_free(dest.gsub(/\s+/, '\ '), ssh) # du post running the backup
