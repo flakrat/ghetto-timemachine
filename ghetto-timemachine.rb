@@ -1,4 +1,5 @@
-#!/usr/bin/ruby -w
+#!/usr/bin/ruby
+##!/usr/bin/ruby -w
 #-----------------------------------------------------------------------------
 # Name        :  ghetto-timemachine.rb
 # Author      :  Mike Hanby < mhanby at uab.edu >
@@ -13,6 +14,20 @@
 #
 #-----------------------------------------------------------------------------
 # History
+# 20120620 - mhanby - v1.0.15
+#   - Script now supports remote src or dest, errors if both are remote
+#   - Now verifies that both source and dest exist before proceeding, previously
+#     only verified destination
+# 20120507 - mhanby - The following error was thrown by rsync, resulting in the
+#   job to stop processing, due to this code:
+#     raise "Rsync failed to sync: " if $?.exitstatus != 0)
+#   Rsync Error
+#     file has vanished: "~/.config/google-chrome/Default/Cookies-journal"
+#     rsync warning: some files vanished before they could be transferred
+#     (code 24) at main.c(1052) [sender=3.0.8]
+#     ~/scripts/ghetto-timemachine/lib/ghetto-timemachine.rb:360:in `run_rsync':
+#     Rsync failed to sync:  (RuntimeError)
+#   Should this be fatal in the script, or a warn?
 # 20120430 - mhanby - Fixed a major bug in mvdir() method where local dir moves
 #   would not execute if the src dir existed. Remote execution (ssh) worked properly
 # 20120409 - mhanby - Fixed reporting string for post command exectution, was reporting
@@ -85,7 +100,8 @@
 #
 #-----------------------------------------------------------------------------
 # Todo / Things that don't work
-# 4. Add a lock file to prevent the script from running multiple times for the
+# TODO - Allow for multiple src directories, in the form of --src usr@srv:/src1,/src2,/srcN
+# TODO - Add a lock file to prevent the script from running multiple times for the
 #   same backup job
 #   May add a #{jobname} variable to the job to allow for multiple unrelated backups
 #   to run at same time
@@ -113,10 +129,12 @@
 # FIXED - 1.  Figure out a way to allow this script to write to a remote --dest that is
 #     accessible via ssh (sftp, rsync -e ssh, etc...)
 #-----------------------------------------------------------------------------
+require 'rubygems'
 require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
 require 'socket' # For Socket.gethostname
 
+@@VERSION = '1.0.15'
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
 options = Hash.new # Hash to hold all options parsed from CLI
@@ -146,7 +164,7 @@ optparse = OptionParser.new()  do |opts|
   
   # destination directory
   options[:dest] = nil
-  opts.on('-d', '--dest FILE', 'Local or remote destination directory\nFor remote use syntax: user@host:/PATH') do |dst|
+  opts.on('-d', '--dst', '--dest FILE', 'Local or remote destination directory\nFor remote use syntax: user@host:/PATH') do |dst|
     options[:dest] = dst
   end
   
@@ -186,17 +204,21 @@ optparse.parse!
 
 raise "\nMandatory argument --src is missing, see --help for details\n" if options[:source].nil?
 raise "\nMandatory argument --dest is missing, see --help for details\n" if options[:dest].nil?
+raise "\nBoth of the arguments, --src and --dst, cannot be remote.\nOnly one remote location is supported, the other must be local!\n" if options[:source] =~ /:/ && options[:dest] =~ /:/
 
 # variables
 debug = options[:debug]
 source = options[:source]
 dest = options[:dest] # will get trimmed to only include the path
+full_src = source # this var will contain full unaltered source, including user, srv, path
 full_dest = dest # this var will contain full unaltered dest, including user, srv, path
-local_dest = 'yes' # Assume dest is local by default
-rem_user = nil
-rem_srv = nil
-ssh = nil # if dest is remote, this will be the Net:SSH.start object
-#sftp = nil # if dest is remote, this will be the Net:SFTP.start object
+#local_src_and_dest = 'yes' # Assume dest is local by default
+#remote_src = nil # if source is remote, set this
+#remote_dst = nil # if dest is remote, set this
+remote_user = nil
+remote_srv = nil
+ssh_src = nil # if source is remote, this will be the Net:SSH.start object
+ssh_dest = nil # if dest is remote, this will be the Net:SSH.start object
 dailydir = 'daily'
 weeklydir = 'weekly'
 monthlydir = 'monthly'
@@ -230,26 +252,41 @@ monthlydirs = months.map do |month|
   "monthly/#{month}"
 end
 
-# Process dest to see if hostname and optionally user name are provided
+# Process source and dest to see if hostname and optionally user name are provided
+# in either.
 # ex: --dest joeblow@nas-01:/backups/joeblow
-if dest =~ /:/
-  local_dest = nil # dest is remote
+if source =~ /:/
+  #local_src_and_dest = nil
+  # remote_src = 'yes'
   require 'rubygems'
   require 'net/ssh'
-  #require 'net/sftp'
-  rem_srv = dest.match(/^(.*):.*$/)[1]
-  rem_srv.sub!(/^.*@/, '')
-  if dest =~ /@/
-    rem_user = dest.match(/(^.*)@(.*):.*$/)[1]
+  remote_srv = source.match(/^(.*):.*$/)[1]
+  remote_srv.sub!(/^.*@/, '')
+  if source =~ /@/
+    remote_user = source.match(/(^.*)@(.*):.*$/)[1]
   else
-    rem_user = ENV['USER'] 
+    remote_user = ENV['USER'] 
   end
+  # Strip out the user and server part of the string
+  source = source.match(/^.*:(.*)$/)[1]
+  ssh_src = Net::SSH.start(remote_srv, remote_user)
+elsif dest =~ /:/
+  # remote_dst = 'yes'
+  require 'rubygems'
+  require 'net/ssh'
+  remote_srv = dest.match(/^(.*):.*$/)[1]
+  remote_srv.sub!(/^.*@/, '')
+  if dest =~ /@/
+    remote_user = dest.match(/(^.*)@(.*):.*$/)[1]
+  else
+    remote_user = ENV['USER'] 
+  end
+  # Strip out the user and server part of the string
   dest = dest.match(/^.*:(.*)$/)[1]
-  ssh = Net::SSH.start(rem_srv, rem_user)
-  #sftp = Net::SFTP.start(rem_srv, rem_user)
+  ssh_dest = Net::SSH.start(remote_srv, remote_user)
 end
 
-# Check whether or not a directory exists, whether local or remote
+# Check whether or not a local or remote directory exists
 def chkdir(dir, ssh)
   result = nil
   if ssh
@@ -354,7 +391,7 @@ def hard_link(src, dest, ssh)
 end
 
 # rsync method
-def run_rsync(opts, src, dest, ssh)
+def run_rsync(opts, src, dest, ssh_src, ssh_dest)
   puts "\trsync #{opts} #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}"
   system("rsync #{opts} #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}")
   raise "Rsync failed to sync: " if $?.exitstatus != 0
@@ -395,7 +432,7 @@ def exit_fatal(msg, postcmds)
 end
 
 # escape any spaces in the path before sending it to the df system command
-du_pre = disk_free(dest.gsub(/\s+/, '\ '), ssh) # Store disk usage prior to running backup
+du_pre = disk_free(dest.gsub(/\s+/, '\ '), ssh_dest) # Store disk usage prior to running backup
 
 print <<EOF
 ======================== BACKUP REPORT ==============================
@@ -405,8 +442,8 @@ print <<EOF
 |  Source        -  #{source}
 |  Destination   -  #{dest}
 EOF
-puts "|  Remote User   -  #{rem_user}" if rem_user
-puts "|  Remote Server -  #{rem_srv}" if rem_srv
+puts "|  Remote User   -  #{remote_user}" if remote_user
+puts "|  Remote Server -  #{remote_srv}" if remote_srv
 print <<EOF
 |   
 |  Disk Usage Before Backup: #{du_pre}
@@ -414,9 +451,12 @@ print <<EOF
 EOF
 
 # Check if the base destination directory exists
-puts "#{step += 1}. Checking for base destination directory"
-unless chkdir(dest, ssh)
+puts "#{step += 1}. Checking for base source and destination directory"
+unless chkdir(dest, ssh_dest)
   raise "Destination dir does not exist: #{dest}"
+end
+unless chkdir(source, ssh_src)
+  raise "Source dir does not exist: #{source}"
 end
 
 # Run the pre backup system command
@@ -428,42 +468,42 @@ else
 end
 
 # Create the base level directory tree
-puts "#{step += 1}. Checking for missing base level directories"
+puts "#{step += 1}. Checking for missing base level destination directories"
 basedirs.each do |dir|
-  mkdir("#{dest}/#{dir}", ssh)
+  mkdir("#{dest}/#{dir}", ssh_dest)
 end
 
 # Create daily directories if they don't exist
-puts "#{step += 1}. Checking for missing daily snapshot directories"
+puts "#{step += 1}. Checking for missing daily snapshot destination directories"
 dailydirs.each do |dir|
-  mkdir("#{dest}/#{dir}", ssh)
+  mkdir("#{dest}/#{dir}", ssh_dest)
 end
 
 # Delete current days snapshot (should be a week old by now)
 puts "#{step += 1}. Removing old daily snapshot"
-rmdir("#{dest}/#{dailydirs[time.wday]}", ssh)
+rmdir("#{dest}/#{dailydirs[time.wday]}", ssh_dest)
 
 # Create hard link copy of yesterday's snapshot to today's directory
 puts "#{step += 1}. Creating a hard linked snapshot as the base of today's incremental backup:"
 puts "\t#{dailydirs[time.wday - 1]} => #{dailydirs[time.wday]}"
 # using full paths will allow the command to work for local and remote destinations
-hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{dailydirs[time.wday]}", ssh)
+hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{dailydirs[time.wday]}", ssh_dest)
 
 # Backup the source using Rsync into today's snapshot directory, end result
 # only changed files will consume new disk space in the daily snapshot
 # unchanged files will remain hard links
 puts "#{step += 1}. Running the rsync command using:"
 # use full_dest instead of dest since it will contain user, server and path if dest is remote
-run_rsync("#{rsync_opts}", "#{source}", "#{full_dest}/#{dailydirs[time.wday]}", ssh)
+run_rsync("#{rsync_opts}", "#{full_src}", "#{full_dest}/#{dailydirs[time.wday]}", ssh_src, ssh_dest)
 
 # Update the mtime on the current snapshot directory
 puts "#{step += 1}. Updating the mtime on #{dest}/#{dailydirs[time.wday]}"
-update_mtime("#{dest}/#{dailydirs[time.wday]}", ssh)
+update_mtime("#{dest}/#{dailydirs[time.wday]}", ssh_dest)
 
 # Create a symlink "latest" pointing to the current snapshot
 # so that the most current backup can be accessed using a common name
 puts "#{step += 1}. Creating symbolic link pointing 'latest' to '#{dailydirs[time.wday]}'"
-soft_link("#{dailydirs[time.wday]}", "#{dest}/latest", ssh)
+soft_link("#{dailydirs[time.wday]}", "#{dest}/latest", ssh_dest)
 
 # If it's Sunday, create a snapshot into weekly/weekly1
 if time.wday == 0 # first day of week, zero based
@@ -471,20 +511,20 @@ if time.wday == 0 # first day of week, zero based
   puts "#{step += 1}. Creating weekly snapshot"
   puts "  #{step}.#{substep += 1}. Checking for missing weekly directories"
   weeklydirs.each do |dir|
-    mkdir("#{dest}/#{dir}", ssh)
+    mkdir("#{dest}/#{dir}", ssh_dest)
   end
   puts "  #{step}.#{substep += 1}. Removing oldest weekly snapshot"
-  rmdir("#{dest}/#{weeklydirs[-1]}", ssh)
+  rmdir("#{dest}/#{weeklydirs[-1]}", ssh_dest)
   puts "  #{step}.#{substep += 1}. Rotating weekly snapshot directories"
   i = weeklydirs.size - 2 # Store index of 2nd to last element in weeklydirs
   while i >= 0
     # i.e. say weekly4 is last (deleted in prev step), move weekly3 => weekly4
     # weekly2 => weekly3, weekly1 => weekly2
-    mvdir("#{dest}/#{weeklydirs[i]}", "#{dest}/#{weeklydirs[i + 1]}", ssh)
+    mvdir("#{dest}/#{weeklydirs[i]}", "#{dest}/#{weeklydirs[i + 1]}", ssh_dest)
     i -= 1
   end
   puts "  #{step}.#{substep += 1}. Snapshotting #{dailydirs[time.wday - 1]} => #{weeklydirs[0]}"
-  hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{weeklydirs[0]}", ssh)
+  hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{weeklydirs[0]}", ssh_dest)
 else
   puts "#{step += 1}. Weekly snapshot is only created on Sunday, skipping"
 end
@@ -497,15 +537,15 @@ if time.day == 1 # first day of month
   puts "  #{step}.#{substep += 1}. Checking for missing monthly directories"
   monthlydirs.each do |dir|
       puts " DEBUG:\tEvaluating #{dir}" if debug
-      puts "\tmkdir(\"#{dest}/#{dir}\", ssh)" if debug
-    mkdir("#{dest}/#{dir}", ssh)
+      puts "\tmkdir(\"#{dest}/#{dir}\", ssh_dest)" if debug
+    mkdir("#{dest}/#{dir}", ssh_dest)
   end
   puts "  #{step}.#{substep += 1}. Removing prior snapshot for last month: #{monthlydirs[time.month - 2]}"
-    puts "DEBUG:\trmdir(\"#{dest}/#{monthlydirs[time.month - 2]}\", ssh)" if debug
-  rmdir("#{dest}/#{monthlydirs[time.month - 2]}", ssh)
+    puts "DEBUG:\trmdir(\"#{dest}/#{monthlydirs[time.month - 2]}\", ssh_dest)" if debug
+  rmdir("#{dest}/#{monthlydirs[time.month - 2]}", ssh_dest)
   puts "  #{step}.#{substep += 1}. Snapshotting #{dailydirs[time.wday - 1]} => #{monthlydirs[time.month - 2]}"
-    puts "DEBUG:\thard_link(\"#{dest}/#{dailydirs[time.wday - 1]}\", \"#{dest}/#{monthlydirs[time.month - 2]}\", ssh)" if debug
-  hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{monthlydirs[time.month - 2]}", ssh)
+    puts "DEBUG:\thard_link(\"#{dest}/#{dailydirs[time.wday - 1]}\", \"#{dest}/#{monthlydirs[time.month - 2]}\", ssh_dest)" if debug
+  hard_link("#{dest}/#{dailydirs[time.wday - 1]}", "#{dest}/#{monthlydirs[time.month - 2]}", ssh_dest)
 else
   puts "#{step += 1}. Monthly snapshot is only created on the first day of the month, skipping"
 end
@@ -518,7 +558,7 @@ else
   puts "#{step += 1}. No Post backup system commands specified, skipping"
 end
 
-du_post = disk_free(dest.gsub(/\s+/, '\ '), ssh) # du post running the backup
+du_post = disk_free(dest.gsub(/\s+/, '\ '), ssh_dest) # du post running the backup
 time2 = Time.new
 print <<EOF
 ============================= SUMMARY ===============================
@@ -531,7 +571,6 @@ print <<EOF
 =====================================================================
 EOF
 
-unless local_dest
-  ssh.close
-  #sftp.close
-end
+ssh_src.close if ssh_src
+ssh_dest.close if ssh_dest
+
