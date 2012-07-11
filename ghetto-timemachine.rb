@@ -12,8 +12,44 @@
 # Date        :  2012-03-20 10:30:19
 # Type        :  Utility
 #
+# Examples
+#   1.  This example is a cron job that uses pre and post commands to suspend
+#       VirtualBox guests during the backup (note, the command has been split onto
+#       multiple lines for readability)
+#   10 1 * * * /usr/local/bin/ghetto-timemachine.rb --src /home/mhanby \
+#   --dest nas-srv1:/data/mhanby/backups/workstation \
+#   --excludes=tmp/\*,Downloads/\*,archive/\*,lost+found,VirtualBox\ VMs/\*/Snapshots \
+#   --precmds '/usr/bin/VBoxManage list runningvms > /var/tmp/runningvms.log',"/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage controlvm \" \$1 \" savestate\") }' /var/tmp/runningvms.log" \
+#   --postcmds "/usr/bin/awk '{ print \$1; system(\"/usr/bin/VBoxManage startvm \" \$1) }' /var/tmp/runningvms.log","rm /var/tmp/runningvms.log" \
+#   | mail -s "SNAPSHOT - Home Directory on $(hostname -s)" mhanby
+#
+#   2.  Backup a remote server (multiple directories) to local file system.
+#   /usr/local/bin/ghetto-timemachine.rb -j "Backup of nagios.mydom.com" \
+#   --src nagios.mydom.com:/boot,/etc,/home,/opt,/root,/usr,/var \
+#   --dest /data/backup/nagios.mydom.com
+#
 #-----------------------------------------------------------------------------
 # History
+# TODO: Restructured the script putting the methods into a class and the runtime
+#     code into an "if __FILE__ == $0" statement to allow the class to be loaded
+#     by other scripts, and allow the script to run standalone
+# 20120621 - mhanby - v1.0.16
+#   - Added a new array of protected destinations, if --dest matches one of these
+#     the script will error out. The intention is to prevent accidentally
+#     overwriting root or other special directories (especially since we use
+#     rsync option --delete)
+#   - Added support for spaces in src and dest paths. Spaces in --src or --dest can
+#     be quoted (the full string) or escaped. Ex:
+#     --src /home/mhanby/Some\ Dir
+#     --src "/home/mhanby/Some Dir"
+#   - Added support for multiple source directories by converting the --src option
+#     to an Array. Example of usage:
+#     --src /home/mhanby/dir1,/home/mhanby/dir2,home/mhanby/Some\ Dir
+#   - Added two new arguments:
+#     --jobdesc - this arg takes a string description of the job. This is used for
+#       the report header. If it's left off, a default description will be used
+#     --override - this overrides the safey check preventing --precmds and --postcmds
+#       from being used when the script is run as root.
 # 20120620 - mhanby - v1.0.15
 #   - Script now supports remote src or dest, errors if both are remote
 #   - Now verifies that both source and dest exist before proceeding, previously
@@ -134,7 +170,7 @@ require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
 require 'socket' # For Socket.gethostname
 
-@@VERSION = '1.0.15'
+@@VERSION = '1.0.16'
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
 options = Hash.new # Hash to hold all options parsed from CLI
@@ -142,6 +178,8 @@ options = Hash.new # Hash to hold all options parsed from CLI
 optparse = OptionParser.new()  do |opts|
   # Help screen banner
   opts.banner = "#{copywrite}
+  
+  ghetto-timemachine version #{@@VERSION}
   
   Backs up the provided SRC to DEST using rsync and hardlinks to provide
   an incremental backup solution without duplicating consumption of storage
@@ -155,26 +193,40 @@ optparse = OptionParser.new()  do |opts|
   opts.on('-v', '--debug', 'Script Debugging Output') do
     options[:debug] = true
   end
-  
-  # source directory
-  options[:source] = nil
-  opts.on('-s', '--src', '--source FILE', 'Local source directory') do |src|
-    options[:source] = src
+
+  # override the "cannot run pre/post commands as root" protection
+  options[:override] = nil
+  opts.on('--override', 'Override the protection mechanism that prevents the use of
+             --precmds and --postcmds when running as root. Be careful!') do
+    options[:override] = true
   end
-  
+
+  # Backup Name
+  options[:jobdesc] = nil
+  opts.on('-j', '--jobdesc "Job Description"', 'Description for this backup job') do |jobdesc|
+    options[:jobdesc] = jobdesc
+  end
+
+  # source director(ies)
+  options[:sources] = nil
+  # opts.on('-s', '--src', '--source FILE', 'Local source directory') do |src|
+  opts.on('-s', '--src', '--sources Dir1,Dir2,DirN', Array, 'Local source director(ies), comma separated and no spaces!') do |src|
+    options[:sources] = src
+  end
+
   # destination directory
   options[:dest] = nil
   opts.on('-d', '--dst', '--dest FILE', 'Local or remote destination directory\nFor remote use syntax: user@host:/PATH') do |dst|
     options[:dest] = dst
   end
-  
+
   # Files or directories to exclude
   options[:excludes] = nil
   opts.on('-e', '--excludes Patrn1,Patrn2,PatrnN', Array, 'Can specify multiple patterns to exclude separated by commas.
             See man rsync for PATTERN details') do |exc|
     options[:excludes] = exc
   end
-  
+
   # Commands to run prior to backup
   options[:precmds] = nil
   opts.on('--precmds Cmd1,Cmd2,CmdN', Array, 'Can specify multiple system commands that will execute locally prior to the backup
@@ -190,7 +242,7 @@ optparse = OptionParser.new()  do |opts|
              WARNING: This can be dangerous, double check command syntax and make sure you know what you are doing!') do |post|
     options[:postcmds] = post
   end
-    
+
   # help
   options[:help] = false
   opts.on('-?', '-h', '--help', 'Display this help screen') do
@@ -202,19 +254,16 @@ end
 # parse! removes the processed args from ARGV
 optparse.parse!
 
-raise "\nMandatory argument --src is missing, see --help for details\n" if options[:source].nil?
+raise "\nMandatory argument --src is missing, see --help for details\n" if options[:sources].nil?
 raise "\nMandatory argument --dest is missing, see --help for details\n" if options[:dest].nil?
-raise "\nBoth of the arguments, --src and --dst, cannot be remote.\nOnly one remote location is supported, the other must be local!\n" if options[:source] =~ /:/ && options[:dest] =~ /:/
+raise "\nBoth of the arguments, --src and --dst, cannot be remote.\nOnly one remote location is supported, the other must be local!\n" if options[:sources] =~ /:/ && options[:dest] =~ /:/
 
 # variables
 debug = options[:debug]
-source = options[:source]
+sources = options[:sources]
 dest = options[:dest] # will get trimmed to only include the path
-full_src = source # this var will contain full unaltered source, including user, srv, path
+full_src = '' # this var will contain full unaltered source, including user, srv, and all sources
 full_dest = dest # this var will contain full unaltered dest, including user, srv, path
-#local_src_and_dest = 'yes' # Assume dest is local by default
-#remote_src = nil # if source is remote, set this
-#remote_dst = nil # if dest is remote, set this
 remote_user = nil
 remote_srv = nil
 ssh_src = nil # if source is remote, this will be the Net:SSH.start object
@@ -223,7 +272,7 @@ dailydir = 'daily'
 weeklydir = 'weekly'
 monthlydir = 'monthly'
 basedirs = [dailydir, weeklydir, monthlydir]
-backup_name = "#{source} Daily Backup"
+backup_name = ''
 step = 0 # counter used when printing steps
 rsync_opts = '-a --one-file-system --delete --delete-excluded' # default rsync options
 #rsync_opts += ' -v' if options[:verbose]
@@ -233,10 +282,13 @@ precmds = options[:precmds] if options[:precmds]
 postcmds = nil
 postcmds = options[:postcmds] if options[:postcmds]
 
-if ( precmds || postcmds ) && Process.uid == 0
+if ( precmds || postcmds ) && ( Process.uid == 0 && options[:override].nil? )
 #  puts "root user: euid: #{Process.euid} uid: #{Process.uid}"
   raise "For protection, the script doesn't allow use of --precmds or --postcmds if run as user ROOT"
 end
+
+# Protected destinations, script will error if dest points to one of these
+protected_dests = %w(/ /boot /dev /etc /proc /sys /home /root /var /bin /lib /lib64 /usr/lib /usr/lib64 /usr/bin /usr/sbin /usr/etc  )
 
 # Time and Day related variables
 time = Time.new
@@ -252,23 +304,23 @@ monthlydirs = months.map do |month|
   "monthly/#{month}"
 end
 
-# Process source and dest to see if hostname and optionally user name are provided
+# Process sources and dest to see if hostname and optionally user name are provided
 # in either.
 # ex: --dest joeblow@nas-01:/backups/joeblow
-if source =~ /:/
-  #local_src_and_dest = nil
-  # remote_src = 'yes'
+if sources[0] =~ /:/
   require 'rubygems'
   require 'net/ssh'
-  remote_srv = source.match(/^(.*):.*$/)[1]
+  remote_srv = sources[0].match(/^(.*):.*$/)[1]
   remote_srv.sub!(/^.*@/, '')
-  if source =~ /@/
-    remote_user = source.match(/(^.*)@(.*):.*$/)[1]
+  if sources[0] =~ /@/
+    remote_user = sources[0].match(/(^.*)@(.*):.*$/)[1]
   else
     remote_user = ENV['USER'] 
   end
   # Strip out the user and server part of the string
-  source = source.match(/^.*:(.*)$/)[1]
+  sources[0] = sources[0].match(/^.*:(.*)$/)[1]
+  full_src << "#{remote_user}@" if remote_user
+  full_src << "#{remote_srv}:" if remote_srv
   ssh_src = Net::SSH.start(remote_srv, remote_user)
 elsif dest =~ /:/
   # remote_dst = 'yes'
@@ -286,14 +338,36 @@ elsif dest =~ /:/
   ssh_dest = Net::SSH.start(remote_srv, remote_user)
 end
 
+# escape spaces in dest
+dest.gsub!(/\s+/, '\ ')
+
+# escape spaces in the source dirs
+sources.map!{ |src| src.gsub(/[\s]+/, '\ ')}
+
+if sources.size > 1
+  full_src << "'"
+  sources.each do |src|
+    full_src << "#{src} "
+  end
+  full_src.strip!
+  full_src << "'"
+else
+  full_src << sources[0]
+end
+
+# Verify that dest isn't one of the protected destinations
+raise "\nDestination #{dest} matches one of the protected destinations in #{protected_dests}\n" if protected_dests.include? dest
+
+backup_name = options[:jobdesc].nil? ? "#{full_src} Daily Backup" : options[:jobdesc]
+
 # Check whether or not a local or remote directory exists
 def chkdir(dir, ssh)
   result = nil
   if ssh
     # BASH test for directory
-    result = ssh.exec!("[ -d \"#{dir.gsub(/\s+/, '\ ')}\" ] && echo exists")
+    result = ssh.exec!("[ -d #{dir} ] && echo exists")
   else
-    result = 'exists' if File.directory?(dir)
+    result = 'exists' if File.directory?(dir.gsub(/\\\s+/, ' ')) # ruby method doesn't work with spaces escaped
   end
   return result
 end
@@ -303,14 +377,14 @@ def mkdir(dir, ssh)
   unless chkdir(dir, ssh)
     if ssh
       puts "\tCreating remote dir #{dir}"
-      ssh.exec!("mkdir #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+      ssh.exec!("mkdir #{dir}") do |ch, stream, data|
         if stream == :stderr
           raise "Failed to create #{dir}:\n   #{data}"
         end
       end
     else
       puts "\tCreating local dir #{dir}"
-      Dir.mkdir(dir)
+      Dir.mkdir(dir.gsub(/\\\s+/, ' '))
     end
   end
 end
@@ -320,14 +394,14 @@ def rmdir(dir, ssh)
   if chkdir(dir, ssh) # dir exists, delete it
     if ssh
       puts "\tDeleting remote dir #{dir}"
-      ssh.exec!("rm -rf #{dir.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+      ssh.exec!("rm -rf #{dir}") do |ch, stream, data|
         if stream == :stderr
           raise "Failed to delete #{dir}:\n   #{data}"
         end
       end
     else
       puts "\tDeleting local dir #{dir}"
-      FileUtils.rm_rf(dir)
+      FileUtils.rm_rf(dir.gsub(/\\\s+/, ' '))
     end
   end
 end
@@ -337,14 +411,14 @@ def mvdir(src, dest, ssh)
   if chkdir(src, ssh) # source dir exists, move it
     if ssh
       puts "\t#{src} => #{dest}"
-      ssh.exec!("mv #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+      ssh.exec!("mv #{src} #{dest}") do |ch, stream, data|
         if stream == :stderr
           raise "Failed to move #{src}:\n   #{data}"
         end
       end
     else
       puts "\t#{src} => #{dest}"
-      FileUtils.mv(src, dest)
+      FileUtils.mv(src.gsub(/\\\s+/, ' '), dest.gsub(/\\\s+/, ' '))
     end
   end
 end
@@ -353,22 +427,22 @@ end
 def soft_link(dir, link, ssh)
   if ssh
     # Can't get "ln -sf" to consistently remove old link, so manually removing it first
-    ssh.exec!("if [ -L #{link.gsub(/\s+/, '\ ')} ]; then rm #{link.gsub(/\s+/, '\ ')}; fi")
-    ssh.exec!("ln -sf #{dir} #{link.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+    ssh.exec!("if [ -L #{link} ]; then rm #{link}; fi")
+    ssh.exec!("ln -sf #{dir} #{link}") do |ch, stream, data|
       if stream == :stderr
         warn "\tFailed to create symlink: #{link}"
       end
     end
   else
-    File.unlink(link) if File.symlink?(link)
-    File.symlink(dir, link)
+    File.unlink(link.gsub(/\\\s+/, ' ')) if File.symlink?(link.gsub(/\\\s+/, ' '))
+    File.symlink(dir.gsub(/\\\s+/, ' '), link.gsub(/\\\s+/, ' '))
   end
 end
 
 # call this method like this to support spaces in the path
 # disk_free(dest.gsub(/\s+/, '\ '), ssh)
 def disk_free(path, ssh)
-  cmd = "df -Ph #{path.gsub(/\s+/, '\ ')} | grep -vi ^filesystem | awk '{print \$3 \" of \" \$2}'"
+  cmd = "df -Ph #{path} | grep -vi ^filesystem | awk '{print \$3 \" of \" \$2}'"
   if ssh
     result = ssh.exec!(cmd)
     result.chomp
@@ -380,29 +454,28 @@ end
 # Create hardlink copy of src to dest
 def hard_link(src, dest, ssh)
   if ssh
-    #result = ssh.exec!("cp -al #{src} #{dest}")
-    ssh.exec!("cp -al #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}") do |ch, stream, data|
+    ssh.exec!("cp -al #{src} #{dest}") do |ch, stream, data|
       raise "Hard link copy failed #{src} => #{dest}:\n  #{data}" if stream == :stderr
     end
   else
-    system("cp -al #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}")
+    system("cp -al #{src} #{dest}")
     raise "Hard link copy failed #{src} => #{dest}:\n  #{$?.exitstatus}" if $?.exitstatus != 0
   end
 end
 
 # rsync method
 def run_rsync(opts, src, dest, ssh_src, ssh_dest)
-  puts "\trsync #{opts} #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}"
-  system("rsync #{opts} #{src.gsub(/\s+/, '\ ')} #{dest.gsub(/\s+/, '\ ')}")
+  puts "\trsync #{opts} #{src} #{dest}"
+  system("rsync #{opts} #{src} #{dest}")
   raise "Rsync failed to sync: " if $?.exitstatus != 0
 end
 
 # updates the mtime of dest to current time
 def update_mtime(dir, ssh)
   if ssh
-    ssh.exec!("/bin/touch #{dir.gsub(/\s+/, '\ ')}")
+    ssh.exec!("/bin/touch #{dir}")
   else
-    system("/bin/touch #{dir.gsub(/\s+/, '\ ')}")
+    system("/bin/touch #{dir}")
   end
 end
 
@@ -432,14 +505,20 @@ def exit_fatal(msg, postcmds)
 end
 
 # escape any spaces in the path before sending it to the df system command
-du_pre = disk_free(dest.gsub(/\s+/, '\ '), ssh_dest) # Store disk usage prior to running backup
+du_pre = disk_free(dest, ssh_dest) # Store disk usage prior to running backup
 
 print <<EOF
 ======================== BACKUP REPORT ==============================
+|  Description   -  #{backup_name}
 |  Date          -  #{starttime}
 |  Run by        -  #{ENV['USER']}
 |  Host          -  #{Socket.gethostname}
-|  Source        -  #{source}
+|  Source Directories:
+EOF
+sources.each do |src|
+  puts "\t\t\t#{src}"
+end
+print <<EOF
 |  Destination   -  #{dest}
 EOF
 puts "|  Remote User   -  #{remote_user}" if remote_user
@@ -451,12 +530,16 @@ print <<EOF
 EOF
 
 # Check if the base destination directory exists
-puts "#{step += 1}. Checking for base source and destination directory"
+puts "#{step += 1}. Checking for base source and destination director(ies)"
+# source director(ies) check
+sources.each do |src|
+  unless chkdir(src, ssh_src)
+    raise "Source dir does not exist: #{src}"
+  end
+end
+# Destination check
 unless chkdir(dest, ssh_dest)
   raise "Destination dir does not exist: #{dest}"
-end
-unless chkdir(source, ssh_src)
-  raise "Source dir does not exist: #{source}"
 end
 
 # Run the pre backup system command
@@ -558,7 +641,7 @@ else
   puts "#{step += 1}. No Post backup system commands specified, skipping"
 end
 
-du_post = disk_free(dest.gsub(/\s+/, '\ '), ssh_dest) # du post running the backup
+du_post = disk_free(dest, ssh_dest) # du post running the backup
 time2 = Time.new
 print <<EOF
 ============================= SUMMARY ===============================
