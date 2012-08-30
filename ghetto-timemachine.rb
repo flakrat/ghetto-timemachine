@@ -344,13 +344,14 @@ dest.gsub!(/\s+/, '\ ')
 # escape spaces in the source dirs
 sources.map!{ |src| src.gsub(/[\s]+/, '\ ')}
 
+# wrap source directories in single quotes is destination is remote and source list contains multiple directories
 if sources.size > 1
-  full_src << "'"
+  full_src << "'" if ssh_dest
   sources.each do |src|
     full_src << "#{src} "
   end
   full_src.strip!
-  full_src << "'"
+  full_src << "'" if ssh_dest
 else
   full_src << sources[0]
 end
