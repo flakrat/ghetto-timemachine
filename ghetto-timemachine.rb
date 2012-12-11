@@ -33,6 +33,10 @@
 # TODO: Restructured the script putting the methods into a class and the runtime
 #     code into an "if __FILE__ == $0" statement to allow the class to be loaded
 #     by other scripts, and allow the script to run standalone
+# 20121211 - mhanby - v1.0.17
+#   - Fixed bug when remote source contained multiple sources, the code now
+#     wraps the source list in single quotes so that rsync treats it as a list
+#     wrather than multiple arguments. 
 # 20120621 - mhanby - v1.0.16
 #   - Added a new array of protected destinations, if --dest matches one of these
 #     the script will error out. The intention is to prevent accidentally
@@ -170,7 +174,7 @@ require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
 require 'socket' # For Socket.gethostname
 
-@@VERSION = '1.0.16'
+@@VERSION = '1.0.17'
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
 options = Hash.new # Hash to hold all options parsed from CLI
@@ -344,14 +348,16 @@ dest.gsub!(/\s+/, '\ ')
 # escape spaces in the source dirs
 sources.map!{ |src| src.gsub(/[\s]+/, '\ ')}
 
-# wrap source directories in single quotes is destination is remote and source list contains multiple directories
+# wrap source directories in single quotes if source is remote and source list contains multiple directories
 if sources.size > 1
-  full_src << "'" if ssh_dest
+  #full_src << "'" if [ssh_src,ssh_dest]
+  full_src << "'" if ssh_src
   sources.each do |src|
     full_src << "#{src} "
   end
   full_src.strip!
-  full_src << "'" if ssh_dest
+  #full_src << "'" if [ssh_src,ssh_dest]
+  full_src << "'" if ssh_src
 else
   full_src << sources[0]
 end
