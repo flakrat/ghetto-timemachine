@@ -2,6 +2,7 @@ Name: ghetto-timemachine.rb
 Author:   Mike Hanby
 Email:    flakrat at yahoo.com
 Org:      University of Alabama at Birmingham IT Research Computing
+License:  Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
 
 Disclaimer: This is my first stab at a Ruby script, so tips,
 fixes, suggestions, whatever are welcome. I'm a sysadmin, not

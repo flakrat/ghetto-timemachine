@@ -11,6 +11,7 @@
 # Usage       :  $0 --src ~/Documents --dest /backups/userA --excludes \*.iso,.svn
 # Date        :  2012-03-20 10:30:19
 # Type        :  Utility
+# License     :  Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
 #
 # Examples
 #   1.  This example is a cron job that uses pre and post commands to suspend
@@ -33,6 +34,9 @@
 # TODO: Restructured the script putting the methods into a class and the runtime
 #     code into an "if __FILE__ == $0" statement to allow the class to be loaded
 #     by other scripts, and allow the script to run standalone
+# 20130221 - mhanby - v1.0.18
+#   - Added a license to the project
+#     Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
 # 20121211 - mhanby - v1.0.17
 #   - Fixed bug when remote source contained multiple sources, the code now
 #     wraps the source list in single quotes so that rsync treats it as a list
@@ -174,7 +178,7 @@ require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
 require 'socket' # For Socket.gethostname
 
-@@VERSION = '1.0.17'
+@@VERSION = '1.0.18'
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
 options = Hash.new # Hash to hold all options parsed from CLI
