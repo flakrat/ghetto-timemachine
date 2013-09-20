@@ -34,6 +34,24 @@
 # TODO: Restructured the script putting the methods into a class and the runtime
 #     code into an "if __FILE__ == $0" statement to allow the class to be loaded
 #     by other scripts, and allow the script to run standalone
+# 20130919 - mhanby - v1.0.19
+#   - Added error handling to mkdir, rmdir, mvdir and soft_link for non-ssh backups. Error
+#     handling already existed for ssh based backups. This should address the issue
+#     identified below
+#   - Identified a bug where FileUtils.rm_rf was failing due to a permissions problem. The failure wasn't trapped
+#     and resulted in a directory recursion that would keep compounding over time (thus eating up disk space and inodes)
+#
+#     Resulting in this kind of tree
+#       sunday
+#          mhanby
+#          saturday
+#       monday
+#          mhanby
+#          sunday
+#       tuesday
+#          mhanby
+#          monday
+# ...
 # 20130221 - mhanby - v1.0.18
 #   - Added a license to the project
 #     Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
@@ -124,8 +142,9 @@
 #   using net-ssh and net-sftp gems
 #   Notes on installing and using gems:
 #   1. Add the following to ~/.bashrc
-#     export GEM_HOME=$HOME/.ruby/lib/ruby/gems/1.8
-#     export RUBYLIB=$HOME/.ruby/lib:$HOME/.ruby/lib/site_ruby/1.8:$RUBYLIB
+#      export RUBYVER=`ruby --version | cut -d" " -f 2 | cut -d. -f 1,2`
+#      export GEM_HOME=$HOME/.ruby/lib/ruby/gems/${RUBYVER}
+#      export RUBYLIB=$HOME/.ruby/lib/ruby:$HOME/.ruby/lib/site_ruby/${RUBYVER}:${RUBYLIB}
 #   2. Install rubygems package (alternatively, download and stall it manually
 #   3. Install the gems
 #       gem install net-ssh
@@ -178,7 +197,7 @@ require 'optparse' # CLI Option Parser
 require 'fileutils' # allow recursive deletion of directory
 require 'socket' # For Socket.gethostname
 
-@@VERSION = '1.0.18'
+@@VERSION = '1.0.19'
 copywrite = "Copyright (c) 2012 Mike Hanby, University of Alabama at Birmingham IT Research Computing."
 
 options = Hash.new # Hash to hold all options parsed from CLI
@@ -187,13 +206,13 @@ optparse = OptionParser.new()  do |opts|
   # Help screen banner
   opts.banner = "#{copywrite}
   
-  ghetto-timemachine version #{@@VERSION}
+  #{File.basename("#{$0}")} - version #{@@VERSION}
   
   Backs up the provided SRC to DEST using rsync and hardlinks to provide
   an incremental backup solution without duplicating consumption of storage
   for unmodified files.
 
-  Usage: #{$0} [options] --src PATH --dest PATH"
+  Usage: #{File.basename("#{$0}")} [options] --src PATH --dest PATH"
   
   # Define the options and what they do
   # debug
@@ -394,8 +413,10 @@ def mkdir(dir, ssh)
         end
       end
     else
-      puts "\tCreating local dir #{dir}"
-      Dir.mkdir(dir.gsub(/\\\s+/, ' '))
+      dir_spc = dir.gsub(/\\\s+/, ' ') # Dir.* methods doen't work with spaces escaped, "unescape them"
+      puts "\tCreating local dir #{dir_spc}"
+      Dir.mkdir(dir_spc)
+      raise "Failed to create #{dir_spc}" if !File.directory?(dir_spc)
     end
   end
 end
@@ -411,8 +432,10 @@ def rmdir(dir, ssh)
         end
       end
     else
-      puts "\tDeleting local dir #{dir}"
-      FileUtils.rm_rf(dir.gsub(/\\\s+/, ' '))
+      dir_spc = dir.gsub(/\\\s+/, ' ') # FileUtils.* methods doen't work with spaces escaped, "unescape them"
+      puts "\tDeleting local dir #{dir_spc}"
+      FileUtils.rm_rf(dir_spc, :secure=>true)
+      raise "Failed to completely remove destination directory: #{dir_spc}" if File.directory?(dir_spc)
     end
   end
 end
@@ -424,12 +447,15 @@ def mvdir(src, dest, ssh)
       puts "\t#{src} => #{dest}"
       ssh.exec!("mv #{src} #{dest}") do |ch, stream, data|
         if stream == :stderr
-          raise "Failed to move #{src}:\n   #{data}"
+          raise "Failed to move #{src} to #{dest}:\n   #{data}"
         end
       end
     else
+      src_spc = src.gsub(/\\\s+/, ' ')
+      dest_spc = dest.gsub(/\\\s+/, ' ')
       puts "\t#{src} => #{dest}"
-      FileUtils.mv(src.gsub(/\\\s+/, ' '), dest.gsub(/\\\s+/, ' '))
+      FileUtils.mv(src_spc, dest_spc) # FileUtils.* methods doen't work with spaces escaped, "unescape them"
+      raise "Failed to move #{src_spc} to #{dest_spc}" if !File.directory?(dest_spc)
     end
   end
 end
@@ -445,8 +471,11 @@ def soft_link(dir, link, ssh)
       end
     end
   else
-    File.unlink(link.gsub(/\\\s+/, ' ')) if File.symlink?(link.gsub(/\\\s+/, ' '))
-    File.symlink(dir.gsub(/\\\s+/, ' '), link.gsub(/\\\s+/, ' '))
+    dir_spc = dir.gsub(/\\\s+/, ' ')
+    link_spc = link.gsub(/\\\s+/, ' ')
+    File.unlink(link_spc) if File.symlink?(link_spc)
+    File.symlink(dir_spc, link_spc)
+    warn "\tFailed to create symlink: #{link_spc}" if !File.symlink?(link_spc)
   end
 end
 
@@ -469,6 +498,7 @@ def hard_link(src, dest, ssh)
       raise "Hard link copy failed #{src} => #{dest}:\n  #{data}" if stream == :stderr
     end
   else
+    #puts "DEBUG: cp -al #{src} #{dest}"
     system("cp -al #{src} #{dest}")
     raise "Hard link copy failed #{src} => #{dest}:\n  #{$?.exitstatus}" if $?.exitstatus != 0
   end
