@@ -1,15 +1,18 @@
->  Name: ghetto-timemachine.rb
->  Author:   Mike Hanby
->  Email:    flakrat at yahoo.com
->  Org:      University of Alabama at Birmingham IT Research Computing
->  License:  Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
+
+## About
+
+-  **Name:** ghetto-timemachine.rb
+-  **Author:** Mike Hanby
+-  **Email:** flakrat at yahoo.com
+-  **Org:** University of Alabama at Birmingham IT Research Computing
+-  **License:** Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0.html
 
 ## Description
 Disclaimer: This is my first stab at a Ruby script, so tips, fixes, suggestions, whatever are welcome. I'm a sysadmin, not a programmer, so please let me know if there are any style mistakes, odd logic, etc...
 
 The name of the script comes from:
--  ghetto - A highly popular open source backup script for VMware ESX servers is uses ghetto, figured I'd borrow from that
--  timemachine - the end result of the backup is "sort of" like the fruit named tech company's Time Machine
+-  **ghetto** - A highly popular open source backup script for VMware ESX servers is uses ghetto, figured I'd borrow from that
+-  **timemachine** - the end result of the backup is "sort of" like the fruit named tech company's Time Machine
 
 The core functionality of the script comes from:
 http://www.mikerubel.org/computers/rsync_snapshots/
